@@ -150,6 +150,11 @@
       border-color: var(--err);
       color: var(--err);
     }
+    /* starred provider */
+    .filter-chip.starred {
+      border-color: #f59e0b;
+    }
+    .filter-chip.starred .chip-star { color: #f59e0b; }
     .filter-chip .chip-count {
       background: rgba(255,255,255,0.18);
       border-radius: 99px;
@@ -160,6 +165,25 @@
     .filter-chip:not(.include):not(.exclude) .chip-count {
       background: var(--border);
       color: var(--muted);
+    }
+    .chip-star {
+      color: var(--muted);
+      font-size: 0.85rem;
+      line-height: 1;
+      padding: 0 2px;
+      transition: color 0.15s, transform 0.15s;
+      cursor: pointer;
+    }
+    .chip-star:hover { color: #f59e0b; transform: scale(1.25); }
+    .starred-banner {
+      display: none;
+      margin-top: 10px;
+      font-size: 0.8rem;
+      color: #f59e0b;
+      background: rgba(245,158,11,0.08);
+      border: 1px solid rgba(245,158,11,0.25);
+      border-radius: 8px;
+      padding: 7px 14px;
     }
     .filter-search {
       margin-left: auto;
@@ -303,6 +327,7 @@
   <div class="filter-bar" id="filter-bar">
     <input type="text" class="filter-search" id="filter-search" placeholder="Search domain…" />
   </div>
+  <div class="starred-banner" id="starred-banner"></div>
 </div>
 
 <!-- Results card -->
@@ -346,9 +371,12 @@
   const visibleCount= document.getElementById('visible-count');
   const noResults   = document.getElementById('no-results');
 
-  let selectedFile  = null;
-  let currentJobId  = null;
-  let allResults    = [];
+  const starredBanner = document.getElementById('starred-banner');
+
+  let selectedFile     = null;
+  let currentJobId     = null;
+  let allResults       = [];
+  let starredProviders = new Set();
 
   // Filter state: { provider: string|null, mode: 'off'|'include'|'exclude' }
   let filterState = { provider: null, mode: 'off' };
@@ -451,7 +479,8 @@
   // ── Render results ─────────────────────────────────────────────────────────
   function renderResults(results) {
     allResults = results;
-    filterState = { provider: null, mode: 'off' };
+    filterState      = { provider: null, mode: 'off' };
+    starredProviders = new Set();
 
     for (const r of allResults) {
       if (!r.provider) r.provider = extractProvider(r.nameservers);
@@ -491,12 +520,57 @@
       const chip = document.createElement('div');
       chip.className = 'filter-chip';
       chip.dataset.provider = provider;
-      chip.innerHTML = `${esc(provider)} <span class="chip-count">${count}</span>`;
+
+      // Star button (separate from filter cycle click)
+      const star = document.createElement('span');
+      star.className = 'chip-star';
+      star.title = 'Star to flag for grouped export';
+      star.textContent = starredProviders.has(provider) ? '★' : '☆';
+      star.addEventListener('click', e => {
+        e.stopPropagation();
+        toggleStar(provider);
+      });
+
+      chip.innerHTML = `<span class="chip-label">${esc(provider)}</span> <span class="chip-count">${count}</span> `;
+      chip.appendChild(star);
       chip.addEventListener('click', () => cycleChip(chip, provider));
       filterBar.appendChild(chip);
     }
 
     filterBar.appendChild(filterSearch);
+    syncStarStyles();
+    updateStarredBanner();
+  }
+
+  function toggleStar(provider) {
+    if (starredProviders.has(provider)) {
+      starredProviders.delete(provider);
+    } else {
+      starredProviders.add(provider);
+    }
+    syncStarStyles();
+    updateStarredBanner();
+  }
+
+  function syncStarStyles() {
+    document.querySelectorAll('.filter-chip[data-provider]').forEach(chip => {
+      const p = chip.dataset.provider;
+      const star = chip.querySelector('.chip-star');
+      if (!star) return;
+      const isStarred = starredProviders.has(p);
+      chip.classList.toggle('starred', isStarred);
+      star.textContent = isStarred ? '★' : '☆';
+    });
+  }
+
+  function updateStarredBanner() {
+    if (starredProviders.size === 0) {
+      starredBanner.style.display = 'none';
+      return;
+    }
+    const list = [...starredProviders].join(', ');
+    starredBanner.style.display = 'block';
+    starredBanner.innerHTML = `★ Export will split into two sheets — <strong>Flagged for Migration</strong> (${list}) and <strong>Other Domains</strong>.`;
   }
 
   function resetFilter() {
@@ -612,14 +686,17 @@
     const res = await fetch('/api/export', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ results: visible }),
+      body: JSON.stringify({
+        results: visible,
+        starred_providers: [...starredProviders],
+      }),
     });
     if (!res.ok) { showError('Export failed.'); return; }
-    const blob = await res.blob();
-    const url  = URL.createObjectURL(blob);
-    const a    = document.createElement('a');
-    a.href     = url;
-    a.download = 'ns_results.xlsx';
+    const blob     = await res.blob();
+    const url      = URL.createObjectURL(blob);
+    const a        = document.createElement('a');
+    a.href         = url;
+    a.download     = starredProviders.size > 0 ? 'ns_results_migration.xlsx' : 'ns_results.xlsx';
     a.click();
     URL.revokeObjectURL(url);
   });
