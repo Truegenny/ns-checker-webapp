@@ -138,10 +138,17 @@
       user-select: none;
     }
     .filter-chip:hover { border-color: var(--accent); color: var(--text); }
-    .filter-chip.active {
+    /* include = show only this provider */
+    .filter-chip.include {
       background: var(--accent);
       border-color: var(--accent);
       color: #fff;
+    }
+    /* exclude = hide this provider */
+    .filter-chip.exclude {
+      background: rgba(239,68,68,0.15);
+      border-color: var(--err);
+      color: var(--err);
     }
     .filter-chip .chip-count {
       background: rgba(255,255,255,0.18);
@@ -150,7 +157,7 @@
       font-size: 0.75rem;
       font-weight: 700;
     }
-    .filter-chip:not(.active) .chip-count {
+    .filter-chip:not(.include):not(.exclude) .chip-count {
       background: var(--border);
       color: var(--muted);
     }
@@ -339,10 +346,12 @@
   const visibleCount= document.getElementById('visible-count');
   const noResults   = document.getElementById('no-results');
 
-  let selectedFile = null;
-  let currentJobId = null;
-  let allResults   = [];
-  let activeProvider = '__all__';
+  let selectedFile  = null;
+  let currentJobId  = null;
+  let allResults    = [];
+
+  // Filter state: { provider: string|null, mode: 'off'|'include'|'exclude' }
+  let filterState = { provider: null, mode: 'off' };
 
   // ── Drop zone ──────────────────────────────────────────────────────────────
   dropZone.addEventListener('click', () => fileInput.click());
@@ -429,9 +438,8 @@
     };
   }
 
-  // ── Provider detection ────────────────────────────────────────────────────
+  // ── Provider detection ─────────────────────────────────────────────────────
   function extractProvider(nameservers) {
-    // Use server-provided provider field if available, otherwise derive client-side
     const providers = new Set();
     for (const ns of nameservers) {
       const parts = ns.replace(/\.$/, '').toLowerCase().split('.');
@@ -440,101 +448,132 @@
     return [...providers].sort().join(', ') || '—';
   }
 
-  // ── Render results ────────────────────────────────────────────────────────
+  // ── Render results ─────────────────────────────────────────────────────────
   function renderResults(results) {
     allResults = results;
-    activeProvider = '__all__';
+    filterState = { provider: null, mode: 'off' };
 
-    resultsSec.style.display = 'block';
-    filterSec.style.display  = 'block';
-    downloadBtn.style.display = 'inline-flex';
-
-    // Ensure every result has a provider
     for (const r of allResults) {
       if (!r.provider) r.provider = extractProvider(r.nameservers);
     }
+
+    resultsSec.style.display  = 'block';
+    filterSec.style.display   = 'block';
+    downloadBtn.style.display = 'inline-flex';
 
     buildFilterChips();
     buildTable();
     renderStats();
   }
 
+  // ── Filter chips ───────────────────────────────────────────────────────────
   function buildFilterChips() {
-    // Count domains per provider
     const providerCounts = {};
     for (const r of allResults) {
-      // A domain may technically have mixed providers — count each
-      const providers = r.provider.split(', ');
-      for (const p of providers) {
+      for (const p of r.provider.split(', ')) {
         providerCounts[p] = (providerCounts[p] || 0) + 1;
       }
     }
-
-    // Sort providers by count desc, then alpha
     const sorted = Object.entries(providerCounts)
       .sort(([a, ca], [b, cb]) => cb - ca || a.localeCompare(b));
 
-    // Rebuild chips (keep search input at the end)
     filterBar.innerHTML = '';
 
-    const allChip = makeChip('All', allResults.length, '__all__', true);
+    // "All" chip — resets filter
+    const allChip = document.createElement('div');
+    allChip.className = 'filter-chip include';
+    allChip.dataset.provider = '__all__';
+    allChip.innerHTML = `All <span class="chip-count">${allResults.length}</span>`;
+    allChip.addEventListener('click', resetFilter);
     filterBar.appendChild(allChip);
 
     for (const [provider, count] of sorted) {
-      filterBar.appendChild(makeChip(provider, count, provider, false));
+      const chip = document.createElement('div');
+      chip.className = 'filter-chip';
+      chip.dataset.provider = provider;
+      chip.innerHTML = `${esc(provider)} <span class="chip-count">${count}</span>`;
+      chip.addEventListener('click', () => cycleChip(chip, provider));
+      filterBar.appendChild(chip);
     }
 
     filterBar.appendChild(filterSearch);
   }
 
-  function makeChip(label, count, value, active) {
-    const chip = document.createElement('div');
-    chip.className = 'filter-chip' + (active ? ' active' : '');
-    chip.dataset.provider = value;
-    chip.innerHTML = `${esc(label)} <span class="chip-count">${count}</span>`;
-    chip.addEventListener('click', () => selectProvider(value));
-    return chip;
+  function resetFilter() {
+    filterState = { provider: null, mode: 'off' };
+    syncChipStyles();
+    applyFilter();
   }
 
-  function selectProvider(value) {
-    activeProvider = value;
-    document.querySelectorAll('.filter-chip').forEach(c => {
-      c.classList.toggle('active', c.dataset.provider === value);
-    });
+  // Cycle: off → include → exclude → off
+  // Clicking a different chip always starts at include
+  function cycleChip(chip, provider) {
+    if (filterState.provider === provider) {
+      // Same chip: advance the cycle
+      if (filterState.mode === 'include') {
+        filterState.mode = 'exclude';
+      } else if (filterState.mode === 'exclude') {
+        filterState = { provider: null, mode: 'off' };
+      }
+    } else {
+      // Different chip: start fresh at include
+      filterState = { provider, mode: 'include' };
+    }
+    syncChipStyles();
     applyFilter();
+  }
+
+  function syncChipStyles() {
+    document.querySelectorAll('.filter-chip').forEach(chip => {
+      const p = chip.dataset.provider;
+      chip.classList.remove('include', 'exclude');
+      if (p === '__all__') {
+        // All chip is highlighted only when no filter active
+        if (filterState.mode === 'off') chip.classList.add('include');
+      } else if (p === filterState.provider) {
+        chip.classList.add(filterState.mode === 'off' ? '' : filterState.mode);
+      }
+    });
   }
 
   // ── Filter & search ────────────────────────────────────────────────────────
   filterSearch.addEventListener('input', applyFilter);
 
+  function getVisibleResults() {
+    const search = filterSearch.value.trim().toLowerCase();
+    return allResults.filter(r => {
+      const providers  = r.provider.toLowerCase().split(', ');
+      const domainMatch = !search || r.domain.toLowerCase().includes(search);
+      let providerMatch = true;
+      if (filterState.mode === 'include') {
+        providerMatch = providers.includes(filterState.provider.toLowerCase());
+      } else if (filterState.mode === 'exclude') {
+        providerMatch = !providers.includes(filterState.provider.toLowerCase());
+      }
+      return domainMatch && providerMatch;
+    });
+  }
+
   function applyFilter() {
-    const search   = filterSearch.value.trim().toLowerCase();
-    const rows     = resultsTbody.querySelectorAll('tr');
-    let visible    = 0;
+    const visible = getVisibleResults();
+    const visibleSet = new Set(visible.map(r => r.domain));
 
-    rows.forEach(row => {
-      const domain   = (row.dataset.domain || '').toLowerCase();
-      const provider = (row.dataset.provider || '').toLowerCase();
-
-      const providerMatch = activeProvider === '__all__' || provider.split(', ').includes(activeProvider);
-      const searchMatch   = !search || domain.includes(search);
-
-      const show = providerMatch && searchMatch;
+    resultsTbody.querySelectorAll('tr').forEach(row => {
+      const show = visibleSet.has(row.dataset.domain);
       row.classList.toggle('hidden', !show);
-      if (show) visible++;
     });
 
-    visibleCount.textContent = visible;
-    noResults.style.display  = visible === 0 ? 'block' : 'none';
+    visibleCount.textContent = visible.length;
+    noResults.style.display  = visible.length === 0 ? 'block' : 'none';
   }
 
   // ── Table ──────────────────────────────────────────────────────────────────
   function buildTable() {
     resultsTbody.innerHTML = allResults.map((r, i) => {
-      const bc       = badgeClass(r.status);
-      const provider = r.provider || '—';
-      const isUnknown= provider === '—';
-      const nsList   = r.nameservers.length
+      const bc        = badgeClass(r.status);
+      const provider  = r.provider || '—';
+      const isUnknown = provider === '—';
+      const nsList    = r.nameservers.length
         ? r.nameservers.map(ns => `<div>${esc(ns)}</div>`).join('')
         : '<span style="color:var(--err)">—</span>';
 
@@ -555,7 +594,7 @@
     let ok = 0, err = 0, warn = 0;
     for (const r of allResults) {
       const bc = badgeClass(r.status);
-      if (bc === 'badge-ok')  ok++;
+      if (bc === 'badge-ok') ok++;
       else if (bc === 'badge-err') err++;
       else warn++;
     }
@@ -567,6 +606,24 @@
     `;
   }
 
+  // ── Export filtered results ────────────────────────────────────────────────
+  downloadBtn.addEventListener('click', async () => {
+    const visible = getVisibleResults();
+    const res = await fetch('/api/export', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ results: visible }),
+    });
+    if (!res.ok) { showError('Export failed.'); return; }
+    const blob = await res.blob();
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement('a');
+    a.href     = url;
+    a.download = 'ns_results.xlsx';
+    a.click();
+    URL.revokeObjectURL(url);
+  });
+
   // ── Helpers ────────────────────────────────────────────────────────────────
   function badgeClass(status) {
     if (status === 'OK') return 'badge-ok';
@@ -576,13 +633,8 @@
   }
 
   function esc(s) {
-    return String(s)
-      .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
   }
-
-  downloadBtn.addEventListener('click', () => {
-    if (currentJobId) window.location.href = `/api/download/${currentJobId}`;
-  });
 </script>
 </body>
 </html>

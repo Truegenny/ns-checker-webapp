@@ -15,8 +15,9 @@ from typing import AsyncGenerator
 
 import pandas as pd
 from fastapi import FastAPI, File, UploadFile, HTTPException
-from fastapi.responses import StreamingResponse, FileResponse
+from fastapi.responses import StreamingResponse, FileResponse, Response
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
 from openpyxl.styles import Font, PatternFill, Alignment
 
 from .ns_checker import run_bulk_lookup
@@ -192,6 +193,21 @@ async def stream_status(job_id: str):
             await asyncio.sleep(0.4)
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
+
+
+class ExportRequest(BaseModel):
+    results: list[dict]
+
+
+@app.post("/api/export")
+async def export_filtered(req: ExportRequest):
+    """Export only the caller-supplied results (the currently visible filtered set)."""
+    excel_bytes = build_excel(req.results)
+    return Response(
+        content=excel_bytes,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": "attachment; filename=ns_results_filtered.xlsx"},
+    )
 
 
 @app.get("/api/download/{job_id}")
