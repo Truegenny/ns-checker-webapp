@@ -225,6 +225,32 @@ async def stream_status(job_id: str):
     return StreamingResponse(event_stream(), media_type="text/event-stream")
 
 
+class BatchRequest(BaseModel):
+    domains: list[str]
+
+
+@app.post("/api/batch")
+async def upload_batch(req: BatchRequest):
+    """Start a job from a pre-parsed list of domains (used for multi-CSV uploads)."""
+    domains = [d.strip() for d in req.domains if d.strip()]
+    if not domains:
+        raise HTTPException(400, "No domains provided")
+
+    job_id = str(uuid.uuid4())
+    jobs[job_id] = {
+        "status": "queued",
+        "progress": 0,
+        "total": len(domains),
+        "results": [],
+        "error": None,
+    }
+
+    thread = threading.Thread(target=run_job, args=(job_id, domains), daemon=True)
+    thread.start()
+
+    return {"job_id": job_id, "total": len(domains)}
+
+
 class ExportRequest(BaseModel):
     results: list[dict]
     starred_providers: list[str] = []

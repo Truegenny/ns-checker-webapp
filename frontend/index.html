@@ -64,7 +64,39 @@
     #drop-zone p   { color: var(--muted); font-size: 0.9rem; margin-top: 6px; }
     #drop-zone strong { color: var(--text); }
     #file-input { display: none; }
-    #file-name { margin-top: 14px; font-size: 0.85rem; color: var(--accent2); min-height: 18px; }
+
+    /* File queue */
+    #file-queue { margin-top: 14px; display: flex; flex-direction: column; gap: 8px; }
+    .file-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 8px 14px;
+      font-size: 0.85rem;
+    }
+    .file-row .file-name { flex: 1; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .file-row .file-count { color: var(--accent2); font-weight: 600; white-space: nowrap; }
+    .file-row .file-remove {
+      background: none;
+      border: none;
+      color: var(--muted);
+      cursor: pointer;
+      font-size: 1rem;
+      padding: 0 4px;
+      margin: 0;
+      line-height: 1;
+      transition: color 0.15s;
+    }
+    .file-row .file-remove:hover { color: var(--err); }
+    #queue-summary {
+      font-size: 0.82rem;
+      color: var(--muted);
+      margin-top: 6px;
+    }
+    #queue-summary strong { color: var(--text); }
 
     /* Buttons */
     button {
@@ -284,12 +316,15 @@
       <path stroke-linecap="round" stroke-linejoin="round"
         d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5m-13.5-9L12 3m0 0l4.5 4.5M12 3v13.5"/>
     </svg>
-    <strong>Drop your CSV here</strong>
-    <p>or click to browse — domains must be in column A</p>
-    <input type="file" id="file-input" accept=".csv" />
+    <strong>Drop CSV files here</strong>
+    <p>or click to browse — domains must be in column A — multiple files supported</p>
+    <input type="file" id="file-input" accept=".csv" multiple />
   </div>
-  <div id="file-name"></div>
+
+  <div id="file-queue"></div>
+  <div id="queue-summary"></div>
   <div id="error-msg" class="error-msg"></div>
+
   <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:center;">
     <button id="submit-btn" disabled>
       <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="none"
@@ -352,34 +387,33 @@
 </div>
 
 <script>
-  const dropZone    = document.getElementById('drop-zone');
-  const fileInput   = document.getElementById('file-input');
-  const fileNameEl  = document.getElementById('file-name');
-  const submitBtn   = document.getElementById('submit-btn');
-  const downloadBtn = document.getElementById('download-btn');
-  const errorMsg    = document.getElementById('error-msg');
-  const progressSec = document.getElementById('progress-section');
-  const resultsSec  = document.getElementById('results-section');
-  const filterSec   = document.getElementById('filter-section');
-  const progressText= document.getElementById('progress-text');
-  const progressPct = document.getElementById('progress-pct');
-  const progressFill= document.getElementById('progress-fill');
-  const statsRow    = document.getElementById('stats-row');
-  const resultsTbody= document.getElementById('results-tbody');
-  const filterBar   = document.getElementById('filter-bar');
-  const filterSearch= document.getElementById('filter-search');
-  const visibleCount= document.getElementById('visible-count');
-  const noResults   = document.getElementById('no-results');
+  const dropZone     = document.getElementById('drop-zone');
+  const fileInput    = document.getElementById('file-input');
+  const fileQueueEl  = document.getElementById('file-queue');
+  const queueSummary = document.getElementById('queue-summary');
+  const submitBtn    = document.getElementById('submit-btn');
+  const downloadBtn  = document.getElementById('download-btn');
+  const errorMsg     = document.getElementById('error-msg');
+  const progressSec  = document.getElementById('progress-section');
+  const resultsSec   = document.getElementById('results-section');
+  const filterSec    = document.getElementById('filter-section');
+  const progressText = document.getElementById('progress-text');
+  const progressPct  = document.getElementById('progress-pct');
+  const progressFill = document.getElementById('progress-fill');
+  const statsRow     = document.getElementById('stats-row');
+  const resultsTbody = document.getElementById('results-tbody');
+  const filterBar    = document.getElementById('filter-bar');
+  const filterSearch = document.getElementById('filter-search');
+  const visibleCount = document.getElementById('visible-count');
+  const noResults    = document.getElementById('no-results');
+  const starredBanner= document.getElementById('starred-banner');
 
-  const starredBanner = document.getElementById('starred-banner');
-
-  let selectedFile     = null;
+  // fileQueue items: { name, size, domains[] }
+  let queuedFiles      = [];
   let currentJobId     = null;
   let allResults       = [];
   let starredProviders = new Set();
-
-  // Filter state: { provider: string|null, mode: 'off'|'include'|'exclude' }
-  let filterState = { provider: null, mode: 'off' };
+  let filterState      = { provider: null, mode: 'off' };
 
   // ── Drop zone ──────────────────────────────────────────────────────────────
   dropZone.addEventListener('click', () => fileInput.click());
@@ -387,16 +421,79 @@
   dropZone.addEventListener('dragleave', () => dropZone.classList.remove('drag-over'));
   dropZone.addEventListener('drop', e => {
     e.preventDefault(); dropZone.classList.remove('drag-over');
-    const f = e.dataTransfer.files[0]; if (f) setFile(f);
+    addFiles([...e.dataTransfer.files]);
   });
-  fileInput.addEventListener('change', () => { if (fileInput.files[0]) setFile(fileInput.files[0]); });
+  fileInput.addEventListener('change', () => {
+    addFiles([...fileInput.files]);
+    fileInput.value = '';
+  });
 
-  function setFile(f) {
-    selectedFile = f;
-    fileNameEl.textContent = `Selected: ${f.name}  (${(f.size / 1024).toFixed(1)} KB)`;
-    submitBtn.disabled = false;
+  function addFiles(files) {
+    const csvs = files.filter(f => f.name.toLowerCase().endsWith('.csv'));
+    if (!csvs.length) { showError('Please select .csv files.'); return; }
     hideError();
-    downloadBtn.style.display = 'none';
+    csvs.forEach(parseAndQueue);
+  }
+
+  function parseAndQueue(file) {
+    const reader = new FileReader();
+    reader.onload = e => {
+      const domains = parseCsvDomains(e.target.result);
+      queuedFiles.push({ name: file.name, size: file.size, domains });
+      renderQueue();
+    };
+    reader.readAsText(file);
+  }
+
+  function parseCsvDomains(text) {
+    text = text.replace(/^\uFEFF/, '');
+    const lines   = text.split(/\r?\n/);
+    const domains = [];
+    for (let i = 0; i < lines.length; i++) {
+      const col = lines[i].split(',')[0].replace(/^"|"$/g, '').trim();
+      if (!col) continue;
+      if (i === 0 && ['domain','domains','url','website','hostname','host'].includes(col.toLowerCase())) continue;
+      domains.push(col);
+    }
+    return domains;
+  }
+
+  function renderQueue() {
+    fileQueueEl.innerHTML = queuedFiles.map((f, i) => `
+      <div class="file-row">
+        <span class="file-name" title="${esc(f.name)}">${esc(f.name)}</span>
+        <span class="file-count">${f.domains.length} domain${f.domains.length !== 1 ? 's' : ''}</span>
+        <button class="file-remove" title="Remove" onclick="removeFile(${i})">✕</button>
+      </div>
+    `).join('');
+
+    if (queuedFiles.length > 0) {
+      const combined = combineDomains();
+      const raw      = queuedFiles.reduce((s, f) => s + f.domains.length, 0);
+      const dupes    = raw - combined.length;
+      queueSummary.innerHTML =
+        `<strong>${combined.length}</strong> unique domain${combined.length !== 1 ? 's' : ''} across <strong>${queuedFiles.length}</strong> file${queuedFiles.length !== 1 ? 's' : ''}` +
+        (dupes > 0 ? ` <span style="color:var(--warn)">(${dupes} duplicate${dupes !== 1 ? 's' : ''} removed)</span>` : '');
+      submitBtn.disabled = false;
+    } else {
+      queueSummary.innerHTML = '';
+      submitBtn.disabled = true;
+    }
+  }
+
+  function removeFile(idx) {
+    queuedFiles.splice(idx, 1);
+    renderQueue();
+  }
+
+  function combineDomains() {
+    const seen = new Set(), out = [];
+    for (const f of queuedFiles)
+      for (const d of f.domains) {
+        const k = d.toLowerCase();
+        if (!seen.has(k)) { seen.add(k); out.push(d); }
+      }
+    return out;
   }
 
   function showError(msg) { errorMsg.textContent = msg; errorMsg.style.display = 'block'; }
@@ -404,7 +501,8 @@
 
   // ── Submit ─────────────────────────────────────────────────────────────────
   submitBtn.addEventListener('click', async () => {
-    if (!selectedFile) return;
+    const domains = combineDomains();
+    if (!domains.length) return;
     hideError();
     submitBtn.disabled = true;
     downloadBtn.style.display = 'none';
@@ -415,14 +513,15 @@
     statsRow.innerHTML        = '';
     setProgress(0, 0);
 
-    const formData = new FormData();
-    formData.append('file', selectedFile);
-
     let res;
     try {
-      res = await fetch('/api/upload', { method: 'POST', body: formData });
+      res = await fetch('/api/batch', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ domains }),
+      });
     } catch (e) {
-      showError('Network error uploading file.'); submitBtn.disabled = false; return;
+      showError('Network error.'); submitBtn.disabled = false; return;
     }
 
     if (!res.ok) {
