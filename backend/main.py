@@ -46,6 +46,18 @@ def parse_csv_domains(content: bytes) -> list[str]:
     return domains
 
 
+def extract_provider(nameservers: list[str]) -> str:
+    """Return the unique NS base-domain(s) from a list of nameserver hostnames.
+    e.g. ['ns41.dnsmadeeasy.com', 'ns11.dnsmadeeasy.com'] -> 'dnsmadeeasy.com'
+    """
+    providers = set()
+    for ns in nameservers:
+        parts = ns.rstrip(".").lower().split(".")
+        if len(parts) >= 2:
+            providers.add(".".join(parts[-2:]))
+    return ", ".join(sorted(providers)) if providers else "—"
+
+
 def build_excel(results: list[dict]) -> bytes:
     """Generate a formatted Excel workbook from lookup results."""
     rows = []
@@ -53,6 +65,7 @@ def build_excel(results: list[dict]) -> bytes:
         rows.append({
             "Domain": r["domain"],
             "Nameservers": ", ".join(r["nameservers"]),
+            "Provider": extract_provider(r["nameservers"]),
             "NS Count": r["ns_count"],
             "Status": r["status"],
         })
@@ -76,7 +89,7 @@ def build_excel(results: list[dict]) -> bytes:
         warn_fill = PatternFill(start_color="FFEB9C", end_color="FFEB9C", fill_type="solid")
 
         for row in ws.iter_rows(min_row=2, max_row=ws.max_row):
-            status = str(row[3].value or "")
+            status = str(row[4].value or "")  # Status is now column E
             if status == "OK":
                 row[3].fill = ok_fill
             elif status in ("NXDOMAIN", "TIMEOUT") or status.startswith("ERROR"):
@@ -108,7 +121,9 @@ def run_job(job_id: str, domains: list[str]) -> None:
         out_path = RESULTS_DIR / f"{job_id}.xlsx"
         out_path.write_bytes(excel_bytes)
 
-        # Summarise for the UI table (keep nameservers as list for JSON)
+        # Annotate each result with its detected provider for the UI
+        for r in results:
+            r["provider"] = extract_provider(r["nameservers"])
         job["results"] = results
         job["status"] = "done"
     except Exception as e:
