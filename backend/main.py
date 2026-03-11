@@ -19,7 +19,7 @@ from fastapi.responses import StreamingResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from openpyxl.styles import Font, PatternFill, Alignment
 
-from ns_checker import run_bulk_lookup
+from .ns_checker import run_bulk_lookup
 
 app = FastAPI(title="NS Checker")
 
