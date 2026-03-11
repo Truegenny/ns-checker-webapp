@@ -1,6 +1,6 @@
 services:
   ns-checker:
-    build: .
+    image: ghcr.io/truegenny/ns-checker-webapp:latest
     container_name: ns-checker
     restart: unless-stopped
     ports:
