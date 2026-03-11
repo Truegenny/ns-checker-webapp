@@ -779,14 +779,17 @@
     `;
   }
 
-  // ── Export filtered results ────────────────────────────────────────────────
+  // ── Export ────────────────────────────────────────────────────────────────
   downloadBtn.addEventListener('click', async () => {
-    const visible = getVisibleResults();
+    // When starred providers are set the export splits ALL results into two sheets,
+    // so we must send allResults — not just the visible filtered subset.
+    // Without stars, export only what's visible on screen.
+    const exportResults = starredProviders.size > 0 ? allResults : getVisibleResults();
     const res = await fetch('/api/export', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        results: visible,
+        results: exportResults,
         starred_providers: [...starredProviders],
       }),
     });
